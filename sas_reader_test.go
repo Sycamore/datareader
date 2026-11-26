@@ -44,6 +44,20 @@ func sasBaseTest(fnameCSV, fnameSAS string, factorizeStrings bool) bool {
 	sas.TrimStrings = true
 	sas.ConvertDates = true
 	sas.FactorizeStrings = factorizeStrings
+	// test2.csv contains UTF-8 bytes, but test16-21 declare Latin encodings.
+	// Match ReadStat's interpretation of those bytes using the declared encoding.
+	if fnameCSV == "test2.csv" && sas.TextDecoder != nil {
+		for _, col := range dt {
+			if values, ok := col.Data().([]string); ok {
+				for i, value := range values {
+					values[i], err = sas.TextDecoder.String(value)
+					if err != nil {
+						return false
+					}
+				}
+			}
+		}
+	}
 
 	// Check the column names
 	for k, na := range sas.ColumnNames() {
