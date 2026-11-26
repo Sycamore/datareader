@@ -653,7 +653,7 @@ func (sas *SAS7BDAT) chunkToSeries() []*Series {
 					miss[i] = true
 				}
 			}
-			if sas.ConvertDates && sas.ColumnFormats[j] == "MMDDYY" || sas.ColumnFormats[j] == "DATE" {
+			if sas.ConvertDates && (sas.ColumnFormats[j] == "MMDDYY" || sas.ColumnFormats[j] == "DATE") {
 				tvec := toDate(vec)
 				rslt[j], _ = NewSeries(name, tvec, miss)
 			} else if sas.ConvertDates && sas.ColumnFormats[j] == "DATETIME" {
@@ -687,7 +687,9 @@ func toDate(x []float64) []time.Time {
 	base := time.Date(1960, 1, 1, 0, 0, 0, 0, time.UTC)
 
 	for j, v := range x {
-		rslt[j] = base.Add(time.Hour * time.Duration(24*v))
+		if !math.IsNaN(v) && !math.IsInf(v, 0) {
+			rslt[j] = base.AddDate(0, 0, int(v))
+		}
 	}
 
 	return rslt
@@ -696,7 +698,11 @@ func toDate(x []float64) []time.Time {
 func date_time(x float64) time.Time {
 	// Timestamp is epoch 01/01/1960
 	base := time.Date(1960, 1, 1, 0, 0, 0, 0, time.UTC)
-	return base.Add(time.Duration(x) * time.Second)
+	if math.IsNaN(x) || math.IsInf(x, 0) {
+		return time.Time{}
+	}
+	seconds, fraction := math.Modf(x)
+	return time.Unix(base.Unix()+int64(seconds), int64(math.Round(fraction*1e6))*1000).UTC()
 }
 
 func toDateTime(x []float64) []time.Time {
