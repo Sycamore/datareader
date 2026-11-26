@@ -179,40 +179,6 @@ const (
 	SASStringType
 )
 
-// Subheader signatures, 32 and 64 bit, little and big endian
-var subheader_signature_to_index = map[string]int{
-	"\xF7\xF7\xF7\xF7":                 rowSizeIndex,
-	"\x00\x00\x00\x00\xF7\xF7\xF7\xF7": rowSizeIndex,
-	"\xF7\xF7\xF7\xF7\x00\x00\x00\x00": rowSizeIndex,
-	"\xF7\xF7\xF7\xF7\xFF\xFF\xFB\xFE": rowSizeIndex,
-	"\xF6\xF6\xF6\xF6":                 columnSizeIndex,
-	"\x00\x00\x00\x00\xF6\xF6\xF6\xF6": columnSizeIndex,
-	"\xF6\xF6\xF6\xF6\x00\x00\x00\x00": columnSizeIndex,
-	"\xF6\xF6\xF6\xF6\xFF\xFF\xFB\xFE": columnSizeIndex,
-	"\x00\xFC\xFF\xFF":                 subheaderCountsIndex,
-	"\xFF\xFF\xFC\x00":                 subheaderCountsIndex,
-	"\x00\xFC\xFF\xFF\xFF\xFF\xFF\xFF": subheaderCountsIndex,
-	"\xFF\xFF\xFF\xFF\xFF\xFF\xFC\x00": subheaderCountsIndex,
-	"\xFD\xFF\xFF\xFF":                 columnTextIndex,
-	"\xFF\xFF\xFF\xFD":                 columnTextIndex,
-	"\xFD\xFF\xFF\xFF\xFF\xFF\xFF\xFF": columnTextIndex,
-	"\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFD": columnTextIndex,
-	"\xFF\xFF\xFF\xFF":                 columnNameIndex,
-	"\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF": columnNameIndex,
-	"\xFC\xFF\xFF\xFF":                 columnAttributesIndex,
-	"\xFF\xFF\xFF\xFC":                 columnAttributesIndex,
-	"\xFC\xFF\xFF\xFF\xFF\xFF\xFF\xFF": columnAttributesIndex,
-	"\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFC": columnAttributesIndex,
-	"\xFE\xFB\xFF\xFF":                 formatAndLabelIndex,
-	"\xFF\xFF\xFB\xFE":                 formatAndLabelIndex,
-	"\xFE\xFB\xFF\xFF\xFF\xFF\xFF\xFF": formatAndLabelIndex,
-	"\xFF\xFF\xFF\xFF\xFF\xFF\xFB\xFE": formatAndLabelIndex,
-	"\xFE\xFF\xFF\xFF":                 columnListIndex,
-	"\xFF\xFF\xFF\xFE":                 columnListIndex,
-	"\xFE\xFF\xFF\xFF\xFF\xFF\xFF\xFF": columnListIndex,
-	"\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFE": columnListIndex,
-}
-
 const (
 	magic = ("\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xc2\xea\x81\x60" +
 		"\xb3\x14\x11\xcf\xbd\x92\x08\x00\x09\xc7\x31\x8c\x18\x1f\x10\x11")
@@ -1182,8 +1148,32 @@ func (sas *SAS7BDAT) processSubheaderPointers(offset, subheaderPointerIndex int)
 
 func (sas *SAS7BDAT) getSubheaderIndex(signature []byte, compression, ptype int) (int, error) {
 
-	index, ok := subheader_signature_to_index[string(signature)]
-	if !ok {
+	word := sas.ByteOrder.Uint32(signature[:4])
+	if sas.ByteOrder == binary.BigEndian && len(signature) == 8 && word == 0xffffffff {
+		word = sas.ByteOrder.Uint32(signature[4:8])
+	}
+	index := 0
+	switch word {
+	case 0xf7f7f7f7:
+		index = rowSizeIndex
+	case 0xf6f6f6f6:
+		index = columnSizeIndex
+	case 0xfffffc00:
+		index = subheaderCountsIndex
+	case 0xfffffffd:
+		index = columnTextIndex
+	case 0xffffffff:
+		index = columnNameIndex
+	case 0xfffffffc:
+		index = columnAttributesIndex
+	case 0xfffffbfe:
+		index = formatAndLabelIndex
+	case 0xfffffffe:
+		index = columnListIndex
+	default:
+		if word&0xfffffff8 == 0xfffffff8 {
+			return subheaderCountsIndex, nil // Other column-mask signatures are ignored.
+		}
 		f := (compression == compressed_subheader_id) || (compression == 0)
 		if (sas.Compression != "") && f && (ptype == compressed_subheader_type) {
 			index = dataSubheaderIndex
