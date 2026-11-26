@@ -18,9 +18,17 @@ func FuzzNewSAS7BDATReader(f *testing.F) {
 			f.Fatal(err)
 		}
 		for _, path := range paths {
-			data, err := os.ReadFile(path)
+			file, err := os.Open(path)
 			if err != nil {
 				f.Fatal(err)
+			}
+			data, err := io.ReadAll(io.LimitReader(file, 64<<10))
+			closeErr := file.Close()
+			if err != nil {
+				f.Fatal(err)
+			}
+			if closeErr != nil {
+				f.Fatal(closeErr)
 			}
 			f.Add(data)
 		}

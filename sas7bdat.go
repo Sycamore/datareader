@@ -1538,6 +1538,9 @@ func (sas *SAS7BDAT) processColumnTextSubheader(offset, length int) error {
 	if length < sas.properties.intLength+2 {
 		return fmt.Errorf("short SAS column text subheader")
 	}
+	if err := sas.validateSubheaderRemainder(offset, length); err != nil {
+		return err
+	}
 	offset += sas.properties.intLength
 	textBlockSize := length - sas.properties.intLength
 
@@ -1561,7 +1564,27 @@ func (sas *SAS7BDAT) processColumnTextSubheader(offset, length int) error {
 	return nil
 }
 
+// validateSubheaderRemainder implements sas_subheader_remainder's check in
+// ReadStat's column-text, column-name and column-attributes parsers.
+func (sas *SAS7BDAT) validateSubheaderRemainder(offset, length int) error {
+	signatureLen := sas.properties.intLength
+	if length < 4+2*signatureLen {
+		return fmt.Errorf("short SAS metadata subheader")
+	}
+	remainder, err := sas.readInt(offset+signatureLen, 2)
+	if err != nil {
+		return err
+	}
+	if uint16(remainder) != uint16(length-(4+2*signatureLen)) || length-(4+2*signatureLen) > 65535 {
+		return fmt.Errorf("invalid SAS metadata subheader remainder")
+	}
+	return nil
+}
+
 func (sas *SAS7BDAT) processColumnNameSubheader(offset, length int) error {
+	if err := sas.validateSubheaderRemainder(offset, length); err != nil {
+		return err
+	}
 
 	intLen := sas.properties.intLength
 	offset += intLen
@@ -1607,6 +1630,9 @@ func (sas *SAS7BDAT) processColumnListSubheader(offset, length int) error {
 }
 
 func (sas *SAS7BDAT) processColumnAttributesSubheader(offset, length int) error {
+	if err := sas.validateSubheaderRemainder(offset, length); err != nil {
+		return err
+	}
 
 	intLen := sas.properties.intLength
 	column_attributes_vectors_count := (length - 2*intLen - 12) / (intLen + 8)
@@ -1634,8 +1660,10 @@ func (sas *SAS7BDAT) processColumnAttributesSubheader(offset, length int) error 
 		}
 		if x == 1 {
 			sas.columnTypes = append(sas.columnTypes, SASNumericType)
-		} else {
+		} else if x == 2 {
 			sas.columnTypes = append(sas.columnTypes, SASStringType)
+		} else {
+			return fmt.Errorf("invalid SAS column type %d", x)
 		}
 	}
 
