@@ -1444,6 +1444,9 @@ func (sas *SAS7BDAT) processColumnNameSubheader(offset, length int) error {
 			return fmt.Errorf("Unable to read column name length.")
 		}
 
+		if idx < 0 || idx >= len(sas.columnNamesStrings) || col_offset < 0 || col_len < 0 || col_offset > len(sas.columnNamesStrings[idx]) || col_len > len(sas.columnNamesStrings[idx])-col_offset {
+			return fmt.Errorf("invalid SAS column name text reference")
+		}
 		name_str := sas.columnNamesStrings[idx]
 		sas.columnNames = append(sas.columnNames, name_str[col_offset:col_offset+col_len])
 	}
@@ -1503,22 +1506,36 @@ func (sas *SAS7BDAT) processFormatSubheader(offset, length int) error {
 	col_label_len := offset + column_label_length_offset + 3*int_len
 
 	format_idx, _ := sas.readInt(text_subheader_format, column_format_text_subheader_index_length)
-	format_idx = min(format_idx, len(sas.columnNamesStrings)-1)
 
 	format_start, _ := sas.readInt(col_format_offset, column_format_offset_length)
 	format_len, _ := sas.readInt(col_format_len, column_format_length_length)
 
 	label_idx, _ := sas.readInt(text_subheader_label, column_label_text_subheader_index_length)
-	label_idx = min(label_idx, len(sas.columnNamesStrings)-1)
 
 	label_start, _ := sas.readInt(col_label_offset, column_label_offset_length)
 	label_len, _ := sas.readInt(col_label_len, column_label_length_length)
 
-	label_names := sas.columnNamesStrings[label_idx]
-	column_label := label_names[label_start : label_start+label_len]
-	format_names := sas.columnNamesStrings[format_idx]
-	column_format := format_names[format_start : format_start+format_len]
+	getText := func(idx, start, length int) (string, error) {
+		if length == 0 {
+			return "", nil
+		}
+		if idx < 0 || idx >= len(sas.columnNamesStrings) || start < 0 || length < 0 || start > len(sas.columnNamesStrings[idx]) || length > len(sas.columnNamesStrings[idx])-start {
+			return "", fmt.Errorf("invalid or unavailable SAS metadata text reference")
+		}
+		return sas.columnNamesStrings[idx][start : start+length], nil
+	}
+	column_label, err := getText(label_idx, label_start, label_len)
+	if err != nil {
+		return err
+	}
+	column_format, err := getText(format_idx, format_start, format_len)
+	if err != nil {
+		return err
+	}
 	current_column_number := len(sas.columns)
+	if current_column_number >= len(sas.columnNames) || current_column_number >= len(sas.columnTypes) || current_column_number >= len(sas.columnDataLengths) {
+		return fmt.Errorf("incomplete SAS column metadata")
+	}
 
 	col := &column{
 		colId:  current_column_number,
