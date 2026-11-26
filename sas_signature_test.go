@@ -92,6 +92,8 @@ func TestSignatureClassification(t *testing.T) {
 		{binary.LittleEndian, []byte{0xf8, 0xff, 0xff, 0xff, 0, 0, 0, 0}, subheaderCountsIndex, false},
 		{binary.BigEndian, []byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xf9}, subheaderCountsIndex, false},
 		{binary.BigEndian, []byte{0xf7, 0xf7, 0xf7, 0xf7, 0xff, 0xff, 0xff, 0xff}, rowSizeIndex, false},
+		{binary.BigEndian, []byte{0, 0, 0, 0, 0xf7, 0xf7, 0xf7, 0xf7}, rowSizeIndex, false},
+		{binary.BigEndian, []byte{0, 0, 0, 0, 0xf6, 0xf6, 0xf6, 0xf6}, columnSizeIndex, false},
 		{binary.LittleEndian, []byte{1, 2, 3, 4, 0, 0, 0, 0}, 0, true},
 	} {
 		s := &SAS7BDAT{ByteOrder: tc.order}

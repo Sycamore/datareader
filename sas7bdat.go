@@ -1267,6 +1267,13 @@ func (sas *SAS7BDAT) getSubheaderIndex(signature []byte, compression, ptype int)
 	if sas.ByteOrder == binary.BigEndian && len(signature) == 8 && word == 0xffffffff {
 		word = sas.ByteOrder.Uint32(signature[4:8])
 	}
+	// Preserve the older zero-extended big-endian row and column forms.
+	if sas.ByteOrder == binary.BigEndian && len(signature) == 8 && word == 0 {
+		second := sas.ByteOrder.Uint32(signature[4:8])
+		if second == 0xf7f7f7f7 || second == 0xf6f6f6f6 {
+			word = second
+		}
+	}
 	index := 0
 	switch word {
 	case 0xf7f7f7f7:
