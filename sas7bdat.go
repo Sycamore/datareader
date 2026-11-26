@@ -402,6 +402,9 @@ func rdc_decompress(result_length int, inbuff []byte) ([]byte, error) {
 			inbuff_pos += 2
 			ctrl_mask = 0x8000
 		}
+		if inbuff_pos >= len(inbuff) {
+			break
+		}
 
 		if (ctrl_bits & ctrl_mask) == 0 {
 			if len(outbuff) >= result_length {
@@ -505,6 +508,19 @@ func NewSAS7BDATReader(r io.ReadSeeker) (*SAS7BDAT, error) {
 	err = sas.parseMetadata()
 	if err != nil {
 		return nil, err
+	}
+	if sas.rowCount < 0 || int64(sas.rowCount) > int64(sas.properties.pageCount)*int64(sas.properties.pageLength) || (sas.rowCount > 0 && sas.properties.rowLength <= 0) {
+		return nil, fmt.Errorf("invalid SAS row dimensions")
+	}
+	n := sas.properties.columnCount
+	if n < 0 || n != len(sas.columnNames) || n != len(sas.columnTypes) || n != len(sas.columnDataOffsets) || n != len(sas.columnDataLengths) || n != len(sas.columns) {
+		return nil, fmt.Errorf("incomplete SAS column metadata")
+	}
+	for i := 0; i < n; i++ {
+		off, width := sas.columnDataOffsets[i], sas.columnDataLengths[i]
+		if off < 0 || width <= 0 || off > sas.properties.rowLength || width > sas.properties.rowLength-off || (sas.columnTypes[i] == SASNumericType && (width < 3 || width > 8)) || (sas.columnTypes[i] == SASStringType && width > 32767) {
+			return nil, fmt.Errorf("invalid SAS column dimensions")
+		}
 	}
 
 	return sas, nil
@@ -626,6 +642,9 @@ func (sas *SAS7BDAT) Read(num_rows int) ([]*Series, error) {
 	if sas.currentRowInFileIndex >= sas.rowCount {
 		return nil, io.EOF
 	}
+	if num_rows > sas.rowCount-sas.currentRowInFileIndex {
+		num_rows = sas.rowCount - sas.currentRowInFileIndex
+	}
 
 	sas.stringPool = make(map[uint64]string)
 	sas.stringPoolR = make(map[string]uint64)
@@ -684,10 +703,10 @@ func (sas *SAS7BDAT) chunkToSeries() []*Series {
 					miss[i] = true
 				}
 			}
-			if sas.ConvertDates && sasDateFormats[sas.ColumnFormats[j]] {
+			if sas.ConvertDates && SASFormatClass(sas.ColumnFormats[j]) == FormatDate {
 				tvec := toDate(vec)
 				rslt[j], _ = NewSeries(name, tvec, miss)
-			} else if sas.ConvertDates && sasDatetimeFormats[sas.ColumnFormats[j]] {
+			} else if sas.ConvertDates && SASFormatClass(sas.ColumnFormats[j]) == FormatDateTime {
 				tvec := toDateTime(vec)
 				rslt[j], _ = NewSeries(name, tvec, miss)
 			} else {
@@ -745,8 +764,9 @@ func date_time(x float64) time.Time {
 	if math.IsNaN(x) || math.IsInf(x, 0) {
 		return time.Time{}
 	}
-	seconds, fraction := math.Modf(x)
-	return time.Unix(base.Unix()+int64(seconds), int64(math.Round(fraction*1e6))*1000).UTC()
+	seconds := math.Floor(x)
+	fraction := x - seconds
+	return time.Unix(base.Unix()+int64(seconds), int64(math.RoundToEven(fraction*1e6))*1000).UTC()
 }
 
 func toDateTime(x []float64) []time.Time {

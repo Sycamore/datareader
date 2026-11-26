@@ -49,7 +49,7 @@ func main() {
 				case []string:
 					row[j] = v[i]
 				case []time.Time:
-					row[j] = v[i]
+					row[j] = v[i].Format(time.RFC3339Nano)
 				default:
 					panic(fmt.Sprintf("unexpected type %T", v))
 				}
