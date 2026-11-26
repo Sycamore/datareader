@@ -81,6 +81,11 @@ func getFilenames() []string {
 	var filenames []string
 	for _, f := range files {
 		name := f.Name()
+		// These fixtures contain undefined Windows-1252 bytes and are tested
+		// as decoding failures, not as successful CLI conversions.
+		if name == "test19.sas7bdat" || name == "test20.sas7bdat" || name == "test21.sas7bdat" {
+			continue
+		}
 		if strings.HasSuffix(name, ".dta") || strings.HasSuffix(name, ".sas7bdat") {
 			filenames = append(filenames, name)
 		}

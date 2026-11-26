@@ -95,7 +95,8 @@ type SAS7BDAT struct {
 	Compression string
 
 	// A decoder for decoding text to unicode
-	TextDecoder *xencoding.Decoder
+	TextDecoder  *xencoding.Decoder
+	encodingCode int
 
 	// The number of rows in the file
 	rowCount int
@@ -394,12 +395,18 @@ func rdc_decompress(result_length int, inbuff []byte) ([]byte, error) {
 	for inbuff_pos < len(inbuff) {
 		ctrl_mask = ctrl_mask >> 1
 		if ctrl_mask == 0 {
+			if len(inbuff)-inbuff_pos < 2 {
+				return nil, fmt.Errorf("truncated RDC control")
+			}
 			ctrl_bits = uint16(inbuff[inbuff_pos])<<8 + uint16(inbuff[inbuff_pos+1])
 			inbuff_pos += 2
 			ctrl_mask = 0x8000
 		}
 
 		if (ctrl_bits & ctrl_mask) == 0 {
+			if len(outbuff) >= result_length {
+				return nil, fmt.Errorf("RDC output too long")
+			}
 			outbuff = append(outbuff, inbuff[inbuff_pos])
 			inbuff_pos++
 			continue
@@ -411,32 +418,53 @@ func rdc_decompress(result_length int, inbuff []byte) ([]byte, error) {
 
 		switch {
 		case cmd == 0: /* short rle */
+			if inbuff_pos >= len(inbuff) || int(cnt)+3 > result_length-len(outbuff) {
+				return nil, fmt.Errorf("invalid RDC run")
+			}
 			cnt += 3
 			for k := 0; k < int(cnt); k++ {
 				outbuff = append(outbuff, inbuff[inbuff_pos])
 			}
 			inbuff_pos++
 		case cmd == 1: /* long /rle */
+			if len(inbuff)-inbuff_pos < 2 {
+				return nil, fmt.Errorf("truncated RDC run")
+			}
 			cnt += uint16(inbuff[inbuff_pos]) << 4
 			cnt += 19
+			if int(cnt) > result_length-len(outbuff) {
+				return nil, fmt.Errorf("RDC output too long")
+			}
 			inbuff_pos++
 			for k := 0; k < int(cnt); k++ {
 				outbuff = append(outbuff, inbuff[inbuff_pos])
 			}
 			inbuff_pos++
 		case cmd == 2: /* long pattern */
+			if len(inbuff)-inbuff_pos < 2 {
+				return nil, fmt.Errorf("truncated RDC pattern")
+			}
 			ofs := cnt + 3
 			ofs += uint16(inbuff[inbuff_pos]) << 4
 			inbuff_pos++
 			cnt = uint16(inbuff[inbuff_pos])
 			inbuff_pos++
 			cnt += 16
+			if int(ofs) > len(outbuff) || cnt > ofs || int(cnt) > result_length-len(outbuff) {
+				return nil, fmt.Errorf("invalid RDC pattern")
+			}
 			tmp := outbuff[len(outbuff)-int(ofs) : len(outbuff)-int(ofs)+int(cnt)]
 			outbuff = append(outbuff, tmp...)
 		case (cmd >= 3) && (cmd <= 15): /* short pattern */
+			if inbuff_pos >= len(inbuff) {
+				return nil, fmt.Errorf("truncated RDC pattern")
+			}
 			ofs = cnt + 3
 			ofs += uint16(inbuff[inbuff_pos]) << 4
 			inbuff_pos++
+			if int(ofs) > len(outbuff) || int(cmd) > int(ofs) || int(cmd) > result_length-len(outbuff) {
+				return nil, fmt.Errorf("invalid RDC pattern")
+			}
 			tmp := outbuff[len(outbuff)-int(ofs) : len(outbuff)-int(ofs)+int(cmd)]
 			outbuff = append(outbuff, tmp...)
 		default:
@@ -445,7 +473,7 @@ func rdc_decompress(result_length int, inbuff []byte) ([]byte, error) {
 	}
 
 	if len(outbuff) != result_length {
-		os.Stderr.WriteString(fmt.Sprintf("RDC: %v != %v\n", len(outbuff), result_length))
+		return nil, fmt.Errorf("RDC length %d, expected %d", len(outbuff), result_length)
 	}
 
 	return outbuff, nil
@@ -486,12 +514,15 @@ func NewSAS7BDATReader(r io.ReadSeeker) (*SAS7BDAT, error) {
 // page (or from the beginning of the file if no page has yet been
 // read).
 func (sas *SAS7BDAT) readBytes(offset, length int) error {
+	if offset < 0 || length < 0 || offset > int(^uint(0)>>1)-length {
+		return fmt.Errorf("invalid SAS read bounds")
+	}
 
 	sas.ensureBufSize(length)
 
 	if sas.cachedPage == nil {
 		if _, err := sas.file.Seek(int64(offset), 0); err != nil {
-			panic(err)
+			return err
 		}
 		n, err := sas.file.Read(sas.buf[0:length])
 		if err != nil {
@@ -653,10 +684,10 @@ func (sas *SAS7BDAT) chunkToSeries() []*Series {
 					miss[i] = true
 				}
 			}
-			if sas.ConvertDates && (sas.ColumnFormats[j] == "MMDDYY" || sas.ColumnFormats[j] == "DATE") {
+			if sas.ConvertDates && sasDateFormats[sas.ColumnFormats[j]] {
 				tvec := toDate(vec)
 				rslt[j], _ = NewSeries(name, tvec, miss)
-			} else if sas.ConvertDates && sas.ColumnFormats[j] == "DATETIME" {
+			} else if sas.ConvertDates && sasDatetimeFormats[sas.ColumnFormats[j]] {
 				tvec := toDateTime(vec)
 				rslt[j], _ = NewSeries(name, tvec, miss)
 			} else {
@@ -678,6 +709,19 @@ func (sas *SAS7BDAT) chunkToSeries() []*Series {
 	}
 
 	return rslt
+}
+
+// pyreadstat's SAS format names; time-only formats remain numeric because
+// Series has no time-of-day type.
+var sasDateFormats = formatSet("WEEKDATE MMDDYY DDMMYY YYMMDD DATE DDMMYYB DDMMYYC DDMMYYD DDMMYYN DDMMYYP DDMMYYS MMDDYYB MMDDYYC MMDDYYD MMDDYYN MMDDYYP MMDDYYS WEEKDATX DTDATE IS8601DA E8601DA B8601DA YYMMDDB YYMMDDD YYMMDDN YYMMDDP YYMMDDS")
+var sasDatetimeFormats = formatSet("DATETIME E8601DT DATEAMPM MDYAMPM IS8601DT B8601DT B8601DN")
+
+func formatSet(names string) map[string]bool {
+	set := make(map[string]bool)
+	for _, name := range strings.Fields(names) {
+		set[name] = true
+	}
+	return set
 }
 
 func toDate(x []float64) []time.Time {
@@ -840,18 +884,16 @@ func (sas *SAS7BDAT) readNextPage() (error, bool) {
 
 	sas.currentPageDataSubheaderPointers = make([]*subheaderPointer, 0, 10)
 	sas.cachedPage = make([]byte, sas.properties.pageLength)
-	n, err := sas.file.Read(sas.cachedPage)
-	if n <= 0 {
+	n, err := io.ReadFull(sas.file, sas.cachedPage)
+	if err == io.EOF && n == 0 {
 		return nil, true
 	}
-
-	if err != nil && err != io.EOF {
+	if err != nil {
 		return err, false
 	}
-
-	if len(sas.cachedPage) != sas.properties.pageLength {
+	if n != sas.properties.pageLength {
 		return fmt.Errorf("failed to read complete page from file (read %d of %d bytes)",
-			len(sas.cachedPage), sas.properties.pageLength), false
+			n, sas.properties.pageLength), false
 	}
 
 	if err := sas.readPageHeader(); err != nil {
@@ -945,6 +987,7 @@ func (sas *SAS7BDAT) getProperties() error {
 		return err
 	}
 	xb := int(sas.buf[0])
+	sas.encodingCode = xb
 	encoding, ok := encoding_names[xb]
 	if ok {
 		sas.FileEncoding = encoding
@@ -1061,13 +1104,23 @@ func (sas *SAS7BDAT) getProperties() error {
 	if err != nil {
 		return fmt.Errorf("Unable to read header size\n")
 	}
+	end, err := sas.file.Seek(0, io.SeekEnd)
+	if err != nil {
+		return err
+	}
+	if prop.headerLength < 288 || int64(prop.headerLength) > end {
+		return fmt.Errorf("invalid SAS header length")
+	}
+	if _, err = sas.file.Seek(288, io.SeekStart); err != nil {
+		return err
+	}
 	if sas.U64 && prop.headerLength != 8192 {
 		os.Stderr.WriteString(fmt.Sprintf("header length %d != 8192\n", prop.headerLength))
 	}
 
 	// Read the rest of the header into cachedPage.
 	v := make([]byte, prop.headerLength-288)
-	if _, err := sas.file.Read(v); err != nil {
+	if _, err := io.ReadFull(sas.file, v); err != nil {
 		return err
 	}
 	sas.cachedPage = append(sas.cachedPage, v...)
@@ -1079,9 +1132,16 @@ func (sas *SAS7BDAT) getProperties() error {
 	if err != nil {
 		return fmt.Errorf("Unable to read the page size value.")
 	}
-	prop.pageCount, err = sas.readInt(page_count_offset+align1, page_count_length)
+	countWidth := page_count_length
+	if sas.U64 {
+		countWidth = 8
+	}
+	prop.pageCount, err = sas.readInt(page_count_offset+align1, countWidth)
 	if err != nil {
 		return fmt.Errorf("Unable to read the page count value.")
+	}
+	if prop.pageLength < prop.pageBitOffset+subheader_pointers_offset || int64(prop.pageLength) > end-int64(prop.headerLength) || prop.pageCount < 0 || int64(prop.pageCount) > (end-int64(prop.headerLength))/int64(prop.pageLength) {
+		return fmt.Errorf("invalid SAS page dimensions")
 	}
 
 	err = sas.readBytes(sas_release_offset+total_align, sas_release_length)
@@ -1165,6 +1225,9 @@ func (sas *SAS7BDAT) processPageMetadata() error {
 			pointer.compression, pointer.ptype)
 		if err != nil {
 			return fmt.Errorf("unknown subheader: %v\n", subheader_signature)
+		}
+		if subheader_index == columnTextIndex {
+			continue // Collected during the first metadata pass.
 		}
 		err = sas.processSubheader(subheader_index, pointer)
 		if err != nil {
@@ -1307,6 +1370,9 @@ func (sas *SAS7BDAT) getSubheaderIndex(signature []byte, compression, ptype int)
 }
 
 func (sas *SAS7BDAT) processByteArrayWithData(offset, length int) error {
+	if offset < 0 || length < 0 || offset > len(sas.cachedPage) || length > len(sas.cachedPage)-offset {
+		return fmt.Errorf("invalid SAS row bounds")
+	}
 
 	var source []byte
 	if sas.Compression != "" && length < sas.properties.rowLength {
@@ -1317,14 +1383,6 @@ func (sas *SAS7BDAT) processByteArrayWithData(offset, length int) error {
 			return err
 		}
 	} else {
-		if offset+length > len(sas.cachedPage) {
-			oldPage := sas.cachedPage
-			err, ok := sas.readNextPage()
-			if err != nil || !ok {
-				return fmt.Errorf("error reading next page - %v", err)
-			}
-			sas.cachedPage = append(oldPage, sas.cachedPage...)
-		}
 		source = sas.cachedPage[offset : offset+length]
 	}
 
@@ -1335,6 +1393,9 @@ func (sas *SAS7BDAT) processByteArrayWithData(offset, length int) error {
 		}
 		start := sas.columnDataOffsets[j]
 		end := start + length
+		if start < 0 || length < 0 || start > len(source) || length > len(source)-start || (sas.columns[j].ctype == SASNumericType && length > 8) {
+			return fmt.Errorf("invalid SAS column bounds")
+		}
 		temp := source[start:end]
 		if sas.columns[j].ctype == SASNumericType {
 			s := 8 * sas.currentRowInChunkIndex
@@ -1347,6 +1408,14 @@ func (sas *SAS7BDAT) processByteArrayWithData(offset, length int) error {
 		} else {
 			if sas.TrimStrings {
 				temp = bytes.TrimRight(temp, "\u0000\u0020")
+			}
+			if sas.encodingCode == 0 || sas.encodingCode == 62 || sas.encodingCode == 204 {
+				for _, b := range temp {
+					switch b {
+					case 0x81, 0x8d, 0x8f, 0x90, 0x9d:
+						return fmt.Errorf("invalid Windows-1252 byte in SAS string")
+					}
+				}
 			}
 			if sas.TextDecoder != nil {
 				var err error
@@ -1446,7 +1515,9 @@ func (sas *SAS7BDAT) processColumnsizeSubheader(offset, length int) error {
 }
 
 func (sas *SAS7BDAT) processColumnTextSubheader(offset, length int) error {
-
+	if length < sas.properties.intLength+2 {
+		return fmt.Errorf("short SAS column text subheader")
+	}
 	offset += sas.properties.intLength
 	textBlockSize := length - sas.properties.intLength
 
@@ -1466,52 +1537,6 @@ func (sas *SAS7BDAT) processColumnTextSubheader(offset, length int) error {
 			}
 		}
 		sas.Compression = compression_literal
-		offset -= sas.properties.intLength
-
-		offset1 := offset + 16
-		if sas.U64 {
-			offset1 += 4
-		}
-		err := sas.readBytes(offset1, sas.properties.lcp)
-		if err != nil {
-			return err
-		}
-		compression_literal = strings.Trim(string(sas.buf[0:8]), "\x00")
-
-		switch {
-		case compression_literal == "":
-			sas.properties.lcs = 0
-			offset1 = offset + 32
-			if sas.U64 {
-				offset1 += 4
-			}
-			err = sas.readBytes(offset1, sas.properties.lcp)
-			if err != nil {
-				return err
-			}
-			sas.properties.creatorProc = string(sas.buf[0:sas.properties.lcp])
-		case compression_literal == rle_compression:
-			offset1 = offset + 40
-			if sas.U64 {
-				offset1 += 4
-			}
-			err = sas.readBytes(offset1, sas.properties.lcp)
-			if err != nil {
-				return err
-			}
-			sas.properties.creatorProc = string(sas.buf[0:sas.properties.lcp])
-		case sas.properties.lcs > 0:
-			sas.properties.lcp = 0
-			offset1 = offset + 16
-			if sas.U64 {
-				offset1 += 4
-			}
-			err = sas.readBytes(offset1, sas.properties.lcs)
-			if err != nil {
-				return err
-			}
-			sas.properties.creatorProc = string(sas.buf[0:sas.properties.lcp])
-		}
 	}
 	return nil
 }
@@ -1680,6 +1705,88 @@ func (sas *SAS7BDAT) ColumnTypes() []ColumnTypeT {
 }
 
 func (sas *SAS7BDAT) parseMetadata() error {
+	// ReadStat collects text from the initial metadata pages, then from
+	// trailing AMD pages in reverse order, before resolving any references.
+	readPage := func(i int) error {
+		if _, err := sas.file.Seek(int64(sas.properties.headerLength)+int64(i)*int64(sas.properties.pageLength), io.SeekStart); err != nil {
+			return err
+		}
+		if _, err := io.ReadFull(sas.file, sas.cachedPage); err != nil {
+			return err
+		}
+		return sas.readPageHeader()
+	}
+	collect := func() error {
+		base := sas.properties.pageBitOffset + subheader_pointers_offset
+		if sas.currentPageSubheadersCount < 0 || sas.currentPageSubheadersCount > (len(sas.cachedPage)-base)/sas.properties.subheaderPointerLength {
+			return fmt.Errorf("invalid SAS subheader count")
+		}
+		for i := 0; i < sas.currentPageSubheadersCount; i++ {
+			p, err := sas.processSubheaderPointers(base, i)
+			if err != nil {
+				return err
+			}
+			if p.length == 0 || p.compression == truncated_subheader_id {
+				continue
+			}
+			if p.offset < base+sas.currentPageSubheadersCount*sas.properties.subheaderPointerLength || p.length < 0 || p.offset > len(sas.cachedPage) || p.length > len(sas.cachedPage)-p.offset {
+				return fmt.Errorf("invalid SAS subheader bounds")
+			}
+			if p.compression != 0 {
+				continue
+			}
+			if p.length < sas.properties.intLength {
+				return fmt.Errorf("short SAS subheader")
+			}
+			sig, err := sas.readSubheaderSignature(p.offset)
+			if err != nil {
+				return err
+			}
+			index, err := sas.getSubheaderIndex(sig, p.compression, p.ptype)
+			if err == nil && index == columnTextIndex {
+				if err := sas.processColumnTextSubheader(p.offset, p.length); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+	last := 0
+	for ; last < sas.properties.pageCount; last++ {
+		if err := readPage(last); err != nil {
+			return err
+		}
+		if sas.currentPageType&0x0f00 == page_data_type {
+			break
+		}
+		if sas.currentPageType&0x9000 == 0 {
+			if err := collect(); err != nil {
+				return err
+			}
+		}
+	}
+	seen := false
+	for i := sas.properties.pageCount - 1; i > last; i-- {
+		if err := readPage(i); err != nil {
+			return err
+		}
+		if sas.currentPageType&0x0f00 == page_data_type {
+			if seen {
+				break
+			}
+			continue
+		}
+		if sas.currentPageType&0x9000 != 0 {
+			continue
+		}
+		if err := collect(); err != nil {
+			return err
+		}
+		seen = true
+	}
+	if _, err := sas.file.Seek(int64(sas.properties.headerLength), io.SeekStart); err != nil {
+		return err
+	}
 
 	for {
 		n, err := sas.file.Read(sas.cachedPage)

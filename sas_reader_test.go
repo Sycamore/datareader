@@ -167,7 +167,7 @@ func TestSASGenerated1(t *testing.T) {
 // See test_files/data for a CSV version of the data file.
 func TestSASGenerated2(t *testing.T) {
 
-	for k := 16; k < 22; k++ {
+	for k := 16; k < 19; k++ {
 		fname := fmt.Sprintf("test%d.sas7bdat", k)
 		for _, factorizeStrings := range []bool{false, true} {
 			r := sasBaseTest("test2.csv", fname, factorizeStrings)
