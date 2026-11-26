@@ -17,7 +17,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/kannanr/datareader"
+	"github.com/Sycamore/datareader"
 )
 
 func doSplit(rdr datareader.StatfileReader, colDir string, mode string) {

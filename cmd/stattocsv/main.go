@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kannanr/datareader"
+	"github.com/Sycamore/datareader"
 )
 
 func doConversion(rdr datareader.StatfileReader) {

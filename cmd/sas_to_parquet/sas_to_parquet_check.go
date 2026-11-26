@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/kannanr/datareader/cmd/sas_to_parquet/test1"
+	"github.com/Sycamore/datareader/cmd/sas_to_parquet/test1"
 	"github.com/xitongsys/parquet-go-source/local"
 	"github.com/xitongsys/parquet-go/reader"
 )

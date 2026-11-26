@@ -1,4 +1,4 @@
-module github.com/kannanr/datareader
+module github.com/Sycamore/datareader
 
 go 1.20
 
