@@ -22,6 +22,11 @@ import (
 	"time"
 
 	xencoding "golang.org/x/text/encoding"
+	"golang.org/x/text/encoding/charmap"
+	"golang.org/x/text/encoding/japanese"
+	"golang.org/x/text/encoding/korean"
+	"golang.org/x/text/encoding/simplifiedchinese"
+	"golang.org/x/text/encoding/traditionalchinese"
 )
 
 // SAS7BDAT represents a SAS data file in SAS7BDAT format.
@@ -473,10 +478,6 @@ func NewSAS7BDATReader(r io.ReadSeeker) (*SAS7BDAT, error) {
 	if err != nil {
 		return nil, err
 	}
-
-	// Default text decoder
-	// leave as nil for now (no decoding)
-	//sas.TextDecoder = charmap.Windows1250.NewDecoder()
 
 	return sas, nil
 }
@@ -944,6 +945,87 @@ func (sas *SAS7BDAT) getProperties() error {
 	} else {
 		sas.FileEncoding = fmt.Sprintf("encoding code=%d", xb)
 	}
+	var codec xencoding.Encoding
+	switch xb {
+	case 0, 62, 204:
+		codec = charmap.Windows1252
+	case 20, 28: // UTF-8 and ASCII require no conversion.
+	case 29:
+		codec = charmap.ISO8859_1
+	case 30:
+		codec = charmap.ISO8859_2
+	case 31:
+		codec = charmap.ISO8859_3
+	case 32:
+		codec = charmap.ISO8859_4
+	case 33:
+		codec = charmap.ISO8859_5
+	case 34:
+		codec = charmap.ISO8859_6
+	case 35:
+		codec = charmap.ISO8859_7
+	case 36:
+		codec = charmap.ISO8859_8
+	case 37:
+		codec = charmap.ISO8859_9
+	case 41:
+		codec = charmap.CodePage437
+	case 42:
+		codec = charmap.CodePage850
+	case 43:
+		codec = charmap.CodePage852
+	case 45:
+		codec = charmap.CodePage858
+	case 46:
+		codec = charmap.CodePage862
+	case 48:
+		codec = charmap.CodePage865
+	case 49:
+		codec = charmap.CodePage866
+	case 40:
+		codec = charmap.ISO8859_15
+	case 60:
+		codec = charmap.Windows1250
+	case 61:
+		codec = charmap.Windows1251
+	case 63:
+		codec = charmap.Windows1253
+	case 64:
+		codec = charmap.Windows1254
+	case 65:
+		codec = charmap.Windows1255
+	case 66:
+		codec = charmap.Windows1256
+	case 67:
+		codec = charmap.Windows1257
+	case 68:
+		codec = charmap.Windows1258
+	case 69:
+		codec = charmap.Macintosh
+	case 118, 123:
+		codec = traditionalchinese.Big5
+	case 125, 205:
+		codec = simplifiedchinese.GB18030
+	case 126:
+		codec = simplifiedchinese.GBK
+	case 134:
+		codec = japanese.EUCJP
+	case 136, 140, 141, 142:
+		codec = korean.EUCKR
+	case 138:
+		codec = japanese.ShiftJIS
+	case 167:
+		codec = japanese.ISO2022JP
+	case 227:
+		codec = charmap.ISO8859_14
+	case 242:
+		codec = charmap.ISO8859_13
+	default:
+		return fmt.Errorf("unsupported SAS character encoding code %d", xb)
+	}
+	if codec != nil {
+		sas.TextDecoder = codec.NewDecoder()
+	}
 
 	err = sas.readBytes(dataset_offset, dataset_length)
 	if err != nil {
@@ -1257,7 +1339,7 @@ func (sas *SAS7BDAT) processByteArrayWithData(offset, length int) error {
 				var err error
 				temp, err = sas.TextDecoder.Bytes(temp)
 				if err != nil {
-					panic(err)
+					return fmt.Errorf("decode SAS string: %w", err)
 				}
 			}
 
@@ -1448,7 +1530,14 @@ func (sas *SAS7BDAT) processColumnNameSubheader(offset, length int) error {
 			return fmt.Errorf("invalid SAS column name text reference")
 		}
 		name_str := sas.columnNamesStrings[idx]
-		sas.columnNames = append(sas.columnNames, name_str[col_offset:col_offset+col_len])
+		name := name_str[col_offset : col_offset+col_len]
+		if sas.TextDecoder != nil {
+			name, err = sas.TextDecoder.String(name)
+			if err != nil {
+				return fmt.Errorf("decode SAS column name: %w", err)
+			}
+		}
+		sas.columnNames = append(sas.columnNames, name)
 	}
 
 	return nil
@@ -1522,7 +1611,11 @@ func (sas *SAS7BDAT) processFormatSubheader(offset, length int) error {
 		if idx < 0 || idx >= len(sas.columnNamesStrings) || start < 0 || length < 0 || start > len(sas.columnNamesStrings[idx]) || length > len(sas.columnNamesStrings[idx])-start {
 			return "", fmt.Errorf("invalid or unavailable SAS metadata text reference")
 		}
-		return sas.columnNamesStrings[idx][start : start+length], nil
+		text := sas.columnNamesStrings[idx][start : start+length]
+		if sas.TextDecoder != nil {
+			return sas.TextDecoder.String(text)
+		}
+		return text, nil
 	}
 	column_label, err := getText(label_idx, label_start, label_len)
 	if err != nil {
