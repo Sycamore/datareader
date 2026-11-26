@@ -764,6 +764,16 @@ func (sas *SAS7BDAT) readline() (error, bool) {
 		} else if sas.isPageMixType(sas.currentPageType) {
 			alignCorrection := (bit_offset + subheader_pointers_offset +
 				sas.currentPageSubheadersCount*subheaderPointerLength) % 8
+			// Stat/Transfer sometimes omits mixed-page padding. ReadStat treats
+			// releases 8.0000M0 and 9.0000M0 as Stat/Transfer and checks
+			// whether the four bytes are actually padding before skipping them.
+			start := bit_offset + subheader_pointers_offset + sas.currentPageSubheadersCount*subheaderPointerLength
+			statTransfer := sas.SASRelease == "8.0000M0" || sas.SASRelease == "9.0000M0"
+			if alignCorrection == 4 && statTransfer && start+4 <= len(sas.cachedPage) &&
+				!bytes.Equal(sas.cachedPage[start:start+4], []byte{0, 0, 0, 0}) &&
+				!bytes.Equal(sas.cachedPage[start:start+4], []byte{' ', ' ', ' ', ' '}) {
+				alignCorrection = 0
+			}
 			if sas.NoAlignCorrection {
 				alignCorrection = 0
 			}
