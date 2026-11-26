@@ -134,6 +134,7 @@ type sasProperties struct {
 	pageLength             int
 	pageCount              int
 	rowLength              int
+	totalRowCount          int
 	colCountP1             int
 	colCountP2             int
 	mixPageRowCount        int
@@ -744,7 +745,7 @@ func (sas *SAS7BDAT) readline() (error, bool) {
 
 	// Loop until a data row is read
 	for {
-		if sas.currentPageType == page_meta_type {
+		if sas.currentPageType&0x0f00 == page_meta_type {
 			if sas.currentRowOnPageIndex >= len(sas.currentPageDataSubheaderPointers) {
 				err, done := sas.readNextPage()
 				if err != nil {
@@ -795,7 +796,34 @@ func (sas *SAS7BDAT) readline() (error, bool) {
 				sas.currentRowOnPageIndex = 0
 			}
 			return nil, false
-		} else if sas.currentPageType == page_data_type {
+		} else if sas.currentPageType&0x0f00 == page_data_type {
+			if sas.currentPageType&0x80 != 0 {
+				unusedOffset := 12
+				if sas.U64 {
+					unusedOffset = 24
+				}
+				unused, err := sas.readInt(unusedOffset, sas.properties.intLength)
+				if err != nil {
+					return err, false
+				}
+				rows := min(sas.currentPageBlockCount, sas.properties.totalRowCount)
+				bitmap := bit_offset + subheader_pointers_offset + rows*sas.properties.rowLength + unused
+				byteIndex := bitmap + sas.currentRowOnPageIndex/8
+				if bitmap < 0 || byteIndex < bitmap || byteIndex >= len(sas.cachedPage) {
+					return fmt.Errorf("invalid deleted-row bitmap"), false
+				}
+				if sas.cachedPage[byteIndex]&(0x80>>uint(sas.currentRowOnPageIndex%8)) != 0 {
+					sas.currentRowOnPageIndex++
+					if sas.currentRowOnPageIndex >= sas.currentPageBlockCount {
+						err, done := sas.readNextPage()
+						if err != nil || done {
+							return err, done
+						}
+						sas.currentRowOnPageIndex = 0
+					}
+					continue
+				}
+			}
 			err := sas.processByteArrayWithData(
 				bit_offset+subheader_pointers_offset+sas.currentRowOnPageIndex*sas.properties.rowLength,
 				sas.properties.rowLength)
@@ -840,7 +868,7 @@ func (sas *SAS7BDAT) readNextPage() (error, bool) {
 		return err, false
 	}
 
-	if sas.currentPageType == page_meta_type {
+	if sas.currentPageType&0x0f00 == page_meta_type && sas.currentPageType&0x9000 == 0 {
 		err = sas.processPageMetadata()
 		if err != nil {
 			return err, false
@@ -1051,6 +1079,12 @@ func (sas *SAS7BDAT) processPageMetadata() error {
 		}
 		if pointer.length == 0 || pointer.compression == truncated_subheader_id {
 			continue
+		}
+		if pointer.compression == 5 {
+			continue
+		} // Deleted compressed row.
+		if pointer.compression == 2 || pointer.compression == 3 || pointer.compression == 6 || pointer.compression == 9 || pointer.compression == 13 {
+			return fmt.Errorf("unsupported moved or referenced SAS row")
 		}
 		subheader_signature, err := sas.readSubheaderSignature(pointer.offset)
 		if err != nil {
@@ -1282,6 +1316,15 @@ func (sas *SAS7BDAT) processRowSizeSubheader(offset, length int) error {
 	if err != nil {
 		return err
 	}
+	sas.properties.totalRowCount = sas.rowCount
+	deleted, err := sas.readInt(offset+(row_count_offset_multiplier+1)*int_len, int_len)
+	if err != nil {
+		return err
+	}
+	if deleted < 0 || deleted > sas.rowCount {
+		return fmt.Errorf("invalid deleted row count")
+	}
+	sas.rowCount -= deleted
 	sas.properties.colCountP1, err = sas.readInt(offset+col_count_p1_multiplier*int_len, int_len)
 	if err != nil {
 		return err
@@ -1571,32 +1614,38 @@ func (sas *SAS7BDAT) processPageMeta() (bool, error) {
 }
 
 func isPageMetaMixAmd(pagetype int) bool {
-	switch pagetype {
-	case page_meta_type, 512, 640, page_amd_type:
+	if pagetype&0x9000 != 0 {
+		return false
+	}
+	switch pagetype & 0x0f00 {
+	case page_meta_type, 512, page_amd_type:
 		return true
 	}
 	return false
 }
 
 func (sas *SAS7BDAT) isPageMixType(val int) bool {
-	switch val {
-	case 512, 640:
+	switch val & 0x0f00 {
+	case 512:
 		return true
 	}
 	return false
 }
 
 func (sas *SAS7BDAT) isPageMixDataType(val int) bool {
-	switch val {
-	case 512, 640, 256:
+	switch val & 0x0f00 {
+	case 512, 256:
 		return true
 	}
 	return false
 }
 
 func checkPageType(current_page int) bool {
-	switch current_page {
-	case page_meta_type, page_data_type, 512, 640:
+	if current_page&0x9000 != 0 {
+		return true
+	}
+	switch current_page & 0x0f00 {
+	case page_meta_type, page_data_type, 512:
 		return false
 	}
 	return true

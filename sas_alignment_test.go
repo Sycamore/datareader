@@ -30,7 +30,7 @@ func TestShortNumericByteOrder(t *testing.T) {
 }
 
 func TestStatTransferMixedPageShortNumerics(t *testing.T) {
-	f, err := os.Open("test_files/data/types.sas7bdat")
+	f, err := os.Open("test_files/regression/types.sas7bdat")
 	if err != nil {
 		t.Fatal(err)
 	}
