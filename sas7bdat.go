@@ -304,89 +304,72 @@ func min(x, y int) int {
 //
 // https://cran.r-project.org/web/packages/sas7bdat/vignettes/sas7bdat.pdf
 func rle_decompress(result_length int, inbuff []byte) ([]byte, error) {
-
 	result := make([]byte, 0, result_length)
 	for len(inbuff) > 0 {
-		control_byte := inbuff[0] & 0xF0
-		end_of_first_byte := int(inbuff[0] & 0x0F)
-
+		command := inbuff[0] >> 4
+		length := int(inbuff[0] & 0x0f)
 		inbuff = inbuff[1:]
-		if control_byte == 0x00 {
-			if end_of_first_byte != 0 {
-				os.Stderr.WriteString("Unexpected non-zero end_of_first_byte\n")
+		copyLen, insertLen := 0, 0
+		var value byte
+		switch command {
+		case 0, 1:
+			if len(inbuff) < 1 {
+				return nil, fmt.Errorf("truncated RLE copy command")
 			}
-			nbytes := int(inbuff[0]) + 64
+			copyLen = int(inbuff[0]) + 64 + length*256 + int(command)*4096
 			inbuff = inbuff[1:]
-			result = append(result, inbuff[0:nbytes]...)
-			inbuff = inbuff[nbytes:]
-		} else if control_byte == 0x40 {
-			// not documented
-			nbytes := end_of_first_byte * 16
-			nbytes += int(inbuff[0])
+		case 2:
+			copyLen = length + 96
+		case 4, 5, 6, 7:
+			if len(inbuff) < 1 {
+				return nil, fmt.Errorf("truncated RLE insert command")
+			}
+			insertLen = int(inbuff[0]) + 17 + length*256
 			inbuff = inbuff[1:]
-			for k := 0; k < nbytes; k++ {
-				result = append(result, inbuff[0])
+			switch command {
+			case 4:
+				if len(inbuff) < 1 {
+					return nil, fmt.Errorf("truncated RLE insert byte")
+				}
+				insertLen++
+				value = inbuff[0]
+				inbuff = inbuff[1:]
+			case 5:
+				value = '@'
+			case 6:
+				value = ' '
 			}
+		case 8, 9, 10, 11:
+			copyLen = length + 1 + 16*int(command-8)
+		case 12:
+			if len(inbuff) < 1 {
+				return nil, fmt.Errorf("truncated RLE insert byte")
+			}
+			insertLen = length + 3
+			value = inbuff[0]
 			inbuff = inbuff[1:]
-		} else if control_byte == 0x60 {
-			nbytes := end_of_first_byte*256 + int(inbuff[0]) + 17
-			inbuff = inbuff[1:]
-			for k := 0; k < nbytes; k++ {
-				result = append(result, 0x20)
+		case 13, 14, 15:
+			insertLen = length + 2
+			if command == 13 {
+				value = '@'
+			} else if command == 14 {
+				value = ' '
 			}
-		} else if control_byte == 0x70 {
-			nbytes := end_of_first_byte*256 + int(inbuff[0]) + 17
-			inbuff = inbuff[1:]
-			for k := 0; k < nbytes; k++ {
-				result = append(result, 0x00)
-			}
-		} else if control_byte == 0x80 {
-			nbytes := end_of_first_byte + 1
-			result = append(result, inbuff[0:nbytes]...)
-			inbuff = inbuff[nbytes:]
-		} else if control_byte == 0x90 {
-			nbytes := end_of_first_byte + 17
-			result = append(result, inbuff[0:nbytes]...)
-			inbuff = inbuff[nbytes:]
-		} else if control_byte == 0xA0 {
-			nbytes := end_of_first_byte + 33
-			result = append(result, inbuff[0:nbytes]...)
-			inbuff = inbuff[nbytes:]
-		} else if control_byte == 0xB0 {
-			nbytes := end_of_first_byte + 49
-			result = append(result, inbuff[0:nbytes]...)
-			inbuff = inbuff[nbytes:]
-		} else if control_byte == 0xC0 {
-			nbytes := end_of_first_byte + 3
-			x := inbuff[0]
-			inbuff = inbuff[1:]
-			for k := 0; k < nbytes; k++ {
-				result = append(result, x)
-			}
-		} else if control_byte == 0xD0 {
-			nbytes := end_of_first_byte + 2
-			for k := 0; k < nbytes; k++ {
-				result = append(result, 0x40)
-			}
-		} else if control_byte == 0xE0 {
-			nbytes := end_of_first_byte + 2
-			for k := 0; k < nbytes; k++ {
-				result = append(result, 0x20)
-			}
-		} else if control_byte == 0xF0 {
-			nbytes := end_of_first_byte + 2
-			for k := 0; k < nbytes; k++ {
-				result = append(result, 0x00)
-			}
-		} else {
-			return nil, fmt.Errorf("unknown control byte: %v", control_byte)
+		default:
+			return nil, fmt.Errorf("unknown RLE command: %d", command)
+		}
+		if copyLen > len(inbuff) || copyLen+insertLen > result_length-len(result) {
+			return nil, fmt.Errorf("invalid RLE length")
+		}
+		result = append(result, inbuff[:copyLen]...)
+		inbuff = inbuff[copyLen:]
+		for i := 0; i < insertLen; i++ {
+			result = append(result, value)
 		}
 	}
-
 	if len(result) != result_length {
-		os.Stderr.WriteString(fmt.Sprintf("RLE: %v != %v\n", len(result), result_length))
+		return nil, fmt.Errorf("RLE length %d, expected %d", len(result), result_length)
 	}
-
 	return result, nil
 }
 
